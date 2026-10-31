@@ -129,11 +129,13 @@ jobs:
       - name: Build kernel
         working-directory: ./kernel
         run: |
+          # build Image only: dtbo.img needs python2, and we keep the stock dtbo
           make -j$(nproc) O=out ARCH=arm64 \
             CC="$GITHUB_WORKSPACE/proton-clang/bin/clang" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-            HOSTCC=gcc HOSTLD=ld HOSTAR=ar
+            HOSTCC=gcc HOSTLD=ld HOSTAR=ar \
+            Image
 
       - name: Verify Image
         working-directory: ./kernel
