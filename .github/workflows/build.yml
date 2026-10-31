@@ -49,6 +49,19 @@ jobs:
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
           ./proton-clang/bin/clang --version | head -2
 
+      - name: Drop legacy KernelSU (drivers/staging/ksu)
+        working-directory: ./kernel
+        run: |
+          # the tree ships an ancient KernelSU at drivers/staging/ksu that also
+          # keys off CONFIG_KSU -> duplicate symbols vs drivers/kernelsu
+          rm -rf drivers/staging/ksu
+          grep -v 'ksu/' drivers/staging/Makefile > /tmp/mk && mv /tmp/mk drivers/staging/Makefile
+          grep -v 'staging/ksu' drivers/staging/Kconfig > /tmp/kc && mv /tmp/kc drivers/staging/Kconfig
+          echo "--- staging/Makefile ksu lines (should be empty) ---"
+          grep -n 'ksu' drivers/staging/Makefile || true
+          echo "--- staging/Kconfig ksu lines (should be empty) ---"
+          grep -n 'ksu' drivers/staging/Kconfig || true
+
       - name: Clone KernelSU (${{ inputs.ksu_tag }})
         working-directory: ./kernel
         run: |
