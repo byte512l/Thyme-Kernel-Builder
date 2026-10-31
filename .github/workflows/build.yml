@@ -115,6 +115,11 @@ jobs:
           EOF
           tail -20 arch/arm64/configs/${{ inputs.defconfig }}
 
+      - name: Shim python2 for mkdtboimg
+        run: |
+          sudo ln -sf "$(command -v python3)" /usr/local/bin/python2
+          python2 --version
+
       - name: Make defconfig
         working-directory: ./kernel
         run: |
