@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Repair the SUSFS 4.19 patch hunks that don't apply to the msm-4.19 CLO tree.
+
+Run from the kernel root after `patch -p1 < 50_add_susfs_in_kernel-4.19.patch`
+and after `patch -p1 < 10_enable_susfs_for_ksu.patch` inside KernelSU/.
+Idempotent: every fix checks for its marker first.
+"""
+import io
+import os
+import re
+import sys
+
+SUSFS_KSU_PATCH = os.path.join("KernelSU", "10_enable_susfs_for_ksu.patch")
+
+
+def read(path):
+    with io.open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+        return f.read()
+
+
+def write(path, text):
+    with io.open(path, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(text)
+
+
+def log(msg):
+    print("[fix] " + msg)
+
+
+def fix_sched_h():
+    """include/linux/sched.h: tree has no ANDROID_KABI_RESERVE, add plain fields."""
+    path = "include/linux/sched.h"
+    text = read(path)
+    if "susfs_task_state" in text:
+        log("sched.h already has susfs fields")
+        return
+    anchor = "\trandomized_struct_fields_end"
+    if anchor not in text:
+        log("!! sched.h: anchor not found")
+        sys.exit(1)
+    block = (
+        "#ifdef CONFIG_KSU_SUSFS\n"
+        "\tu64 susfs_task_state;\n"
+        "\tu64 susfs_last_fake_mnt_id;\n"
+        "#endif\n"
+    )
+    text = text.replace(anchor, block + anchor, 1)
+    write(path, text)
+    log("sched.h: inserted susfs_task_state / susfs_last_fake_mnt_id")
+
+
+def fix_task_mmu_h():
+    """fs/proc/task_mmu.c: missing #include <linux/susfs_def.h>."""
+    path = "fs/proc/task_mmu.c"
+    text = read(path)
+    if "susfs_def.h" in text:
+        log("task_mmu.c already includes susfs_def.h")
+        return
+    block = (
+        "#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT\n"
+        "#include <linux/susfs_def.h>\n"
+        "#endif\n"
+    )
+    # insert after the first linux header include
+    m = re.search(r"^#include <linux/[^\n]*>\n", text, re.M)
+    if not m:
+        log("!! task_mmu.c: no include anchor")
+        sys.exit(1)
+    idx = m.end()
+    text = text[:idx] + block + text[idx:]
+    write(path, text)
+    log("task_mmu.c: inserted susfs_def.h include")
+
+
+def fix_readdir_h():
+    """fs/readdir.c: compat_fillonedir guard hunk failed."""
+    path = "fs/readdir.c"
+    text = read(path)
+    fn = "static int compat_fillonedir(struct dir_context *ctx, const char *name,"
+    if fn not in text:
+        log("!! readdir.c: compat_fillonedir not found")
+        sys.exit(1)
+    start = text.index(fn)
+    guard = (
+        "#ifdef CONFIG_KSU_SUSFS_SUS_PATH\n"
+        "\tif (likely(current->susfs_task_state & TASK_STRUCT_NON_ROOT_USER_APP_PROC) && "
+        "susfs_sus_ino_for_filldir64(ino)) {\n"
+        "\t\treturn 0;\n"
+        "\t}\n"
+        "#endif\n"
+    )
+    # place right after the opening brace of the function body
+    brace = text.index("{", start)
+    body = text[brace:]
+    if "susfs_sus_ino_for_filldir64(ino)" in body[:600]:
+        log("readdir.c: compat_fillonedir already guarded")
+        return
+    nl = text.index("\n", brace)
+    text = text[: nl + 1] + guard + text[nl + 1 :]
+    write(path, text)
+    log("readdir.c: inserted compat_fillonedir sus_path guard")
+
+
+def fix_ksu_kconfig():
+    """KernelSU/kernel/Kconfig: SUSFS menu hunk failed, append it verbatim."""
+    path = os.path.join("KernelSU", "kernel", "Kconfig")
+    text = read(path)
+    if "KSU_SUSFS" in text:
+        log("KernelSU Kconfig already has KSU_SUSFS")
+        return
+    if not os.path.exists(SUSFS_KSU_PATCH):
+        log("!! SUSFS KernelSU patch missing")
+        sys.exit(1)
+    patch = read(SUSFS_KSU_PATCH)
+    lines = patch.split("\n")
+    # locate the kernel/Kconfig diff section
+    start = None
+    for i, line in enumerate(lines):
+        if line.startswith("diff --git a/kernel/Kconfig"):
+            start = i
+            break
+    if start is None:
+        log("!! kernel/Kconfig section not found in patch")
+        sys.exit(1)
+    added = []
+    for line in lines[start + 1 :]:
+        if line.startswith("diff --git"):
+            break
+        if line.startswith("+") and not line.startswith("+++"):
+            added.append(line[1:])
+    if not added:
+        log("!! no added lines extracted")
+        sys.exit(1)
+    text = text.rstrip("\n") + "\n\n" + "\n".join(added).strip("\n") + "\n"
+    write(path, text)
+    log("KernelSU Kconfig: appended SUSFS menu (%d lines)" % len(added))
+
+
+def main():
+    if not os.path.isdir("KernelSU"):
+        log("!! KernelSU dir missing")
+        sys.exit(1)
+    fix_sched_h()
+    fix_task_mmu_h()
+    fix_readdir_h()
+    fix_ksu_kconfig()
+    log("all repairs done")
+
+
+if __name__ == "__main__":
+    main()

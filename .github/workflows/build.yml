@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       ksu_tag:
-        description: "KernelSU tag (SUSFS patch targets v1.0.3)"
+        description: "KernelSU tag (SUSFS kernel-4.19 patch targets v1.0.3)"
         default: "v1.0.3"
         required: false
       kernel_repo:
@@ -19,9 +19,6 @@ on:
         description: "defconfig file name"
         default: "thyme_defconfig"
         required: false
-
-env:
-  KERNEL_DIR: kernel
 
 jobs:
   build:
@@ -42,16 +39,15 @@ jobs:
       - name: Clone kernel source
         run: |
           git clone --recursive --branch "${{ inputs.kernel_branch }}" \
-            "${{ inputs.kernel_repo }}" "$KERNEL_DIR" --depth=1
-          cd "$KERNEL_DIR"
+            "${{ inputs.kernel_repo }}" kernel --depth=1
+          cd kernel
           echo "HEAD: $(git log --oneline -1)"
           ls arch/arm64/configs/${{ inputs.defconfig }}
 
       - name: Get toolchain (proton-clang)
         run: |
           git clone --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang
-          echo "$GITHUB_WORKSPACE/proton-clang/bin" >> $GITHUB_PATH
-          "$GITHUB_WORKSPACE/proton-clang/bin/clang" --version | head -2
+          ./proton-clang/bin/clang --version | head -2
 
       - name: Clone KernelSU (${{ inputs.ksu_tag }})
         working-directory: ./kernel
@@ -67,13 +63,10 @@ jobs:
           ln -sfn ../KernelSU drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
-          echo "--- drivers/Makefile tail ---"; tail -3 drivers/Makefile
-          echo "--- drivers/Kconfig tail ---"; tail -3 drivers/Kconfig
 
       - name: Clone SUSFS and apply patches
         working-directory: ./kernel
         run: |
-          set -x
           git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git susfs_src
           cp susfs_src/kernel_patches/fs/susfs.c fs/
           cp susfs_src/kernel_patches/fs/sus_su.c fs/
@@ -81,15 +74,21 @@ jobs:
           cp susfs_src/kernel_patches/include/linux/susfs_def.h include/linux/
           cp susfs_src/kernel_patches/include/linux/sus_su.h include/linux/
           cp susfs_src/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch KernelSU/
-          ( cd KernelSU && patch -p1 --forward --no-backup-if-mismatch -r - < 10_enable_susfs_for_ksu.patch || echo "::warning::KernelSU patch had rejects" )
-          patch -p1 --forward --no-backup-if-mismatch -r - < susfs_src/kernel_patches/50_add_susfs_in_kernel-4.19.patch || echo "::warning::kernel patch had rejects"
-          echo "=== rejects ==="
-          find . -name "*.rej" -not -path "./susfs_src/*" | tee /tmp/rejects.txt
-          wc -l /tmp/rejects.txt
-          echo "=== verify ==="
-          ls -l fs/susfs.c fs/sus_su.c include/linux/susfs.h include/linux/susfs_def.h include/linux/sus_su.h
+          ( cd KernelSU && patch -p1 --forward --no-backup-if-mismatch < 10_enable_susfs_for_ksu.patch || true )
+          patch -p1 --forward --no-backup-if-mismatch < susfs_src/kernel_patches/50_add_susfs_in_kernel-4.19.patch || true
+          echo "=== leftover rejects ==="
+          find . -name "*.rej" -not -path "./susfs_src/*" | tee rejects.txt || true
+
+      - name: Repair rejects (msm-4.19 tree differences)
+        working-directory: ./kernel
+        run: |
+          cp ../fix_patches.py .
+          python3 fix_patches.py
+          echo "=== verify markers ==="
           grep -c susfs fs/Makefile
-          grep -rn "susfs" kernel/Kconfig | head -20 || true
+          grep -n "susfs_task_state" include/linux/sched.h | head -3
+          grep -n "susfs_def.h" fs/proc/task_mmu.c fs/readdir.c fs/notify/fdinfo.c | head -5
+          grep -n "KSU_SUSFS" KernelSU/kernel/Kconfig | head -5
 
       - name: Append kernel config
         working-directory: ./kernel
@@ -107,7 +106,6 @@ jobs:
           CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
           CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y
           CONFIG_KSU_SUSFS_SUS_KSTAT=y
-          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=y
           CONFIG_KSU_SUSFS_TRY_UMOUNT=y
           CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
           CONFIG_KSU_SUSFS_SPOOF_UNAME=y
@@ -115,31 +113,35 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           EOF
-          tail -25 arch/arm64/configs/${{ inputs.defconfig }}
+          tail -20 arch/arm64/configs/${{ inputs.defconfig }}
 
       - name: Make defconfig
         working-directory: ./kernel
         run: |
           make -j$(nproc) O=out ARCH=arm64 \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
+            CC="$GITHUB_WORKSPACE/proton-clang/bin/clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCC=gcc HOSTLD=ld HOSTAR=ar \
             ${{ inputs.defconfig }}
-          grep -E "CONFIG_(KSU|KPROBES|KSU_SUSFS)" out/.config | head -30
+          grep -E "CONFIG_(KSU|KPROBES)" out/.config | head -25
 
       - name: Build kernel
         working-directory: ./kernel
         run: |
           make -j$(nproc) O=out ARCH=arm64 \
-            CC=clang CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            CC="$GITHUB_WORKSPACE/proton-clang/bin/clang" \
+            CLANG_TRIPLE=aarch64-linux-gnu- \
+            CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
+            HOSTCC=gcc HOSTLD=ld HOSTAR=ar
 
       - name: Verify Image
         working-directory: ./kernel
         run: |
           ls -l out/arch/arm64/boot/Image
           strings out/arch/arm64/boot/Image | grep -m3 "Linux version"
-          echo "susfs symbols: $(strings out/arch/arm64/boot/Image | grep -c susfs)"
-          echo "kernelsu symbols: $(strings out/arch/arm64/boot/Image | grep -c -i kernelsu)"
+          echo "susfs strings: $(strings out/arch/arm64/boot/Image | grep -c susfs)"
+          echo "kernelsu strings: $(strings out/arch/arm64/boot/Image | grep -c -i kernelsu)"
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
@@ -149,11 +151,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build log
+      - name: Upload rejects
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rejects
-          path: /tmp/rejects.txt
+          path: |
+            kernel/rejects.txt
+            kernel/**/*.rej
           if-no-files-found: ignore
           retention-days: 7
