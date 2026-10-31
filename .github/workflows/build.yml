@@ -60,7 +60,7 @@ jobs:
           git config user.name "ci"
           git revert --no-commit 898e9d4f8ca9b2f46b0c6b36b80a872b5b88d899 || echo "::warning::revert commit skipped"
           cd ..
-          ln -sfn ../KernelSU drivers/kernelsu
+          ln -sfn ../KernelSU/kernel drivers/kernelsu
           echo 'obj-$(CONFIG_KSU) += kernelsu/' >> drivers/Makefile
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
