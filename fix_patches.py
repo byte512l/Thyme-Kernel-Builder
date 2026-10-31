@@ -136,6 +136,61 @@ def fix_ksu_kconfig():
     log("KernelSU Kconfig: appended SUSFS menu (%d lines)" % len(added))
 
 
+NS_PATH = "fs/namespace.c"
+NS_ANCHOR = "static bool is_mnt_ns_file"
+
+NS_FUNCS = """
+static int can_umount(const struct path *path, int flags)
+{
+\tstruct mount *mnt = real_mount(path->mnt);
+\tif (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
+\t\treturn -EINVAL;
+\tif (!may_mount())
+\t\treturn -EPERM;
+\tif (path->dentry != path->mnt->mnt_root)
+\t\treturn -EINVAL;
+\tif (!check_mnt(mnt))
+\t\treturn -EINVAL;
+\tif (mnt->mnt.mnt_flags & MNT_LOCKED)
+\t\treturn -EINVAL;
+\tif (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
+\t\treturn -EPERM;
+\treturn 0;
+}
+
+int path_umount(struct path *path, int flags)
+{
+\tstruct mount *mnt = real_mount(path->mnt);
+\tint ret;
+\tret = can_umount(path, flags);
+\tif (!ret)
+\t\tret = do_umount(mnt, flags);
+\tdput(path->dentry);
+\tmntput_no_expire(mnt);
+\treturn ret;
+}
+"""
+
+
+def fix_namespace_c():
+    """SUSFS injects can_umount/path_umount from KernelSU's Makefile at parse
+    time, which is too late for fs/namespace.o in a single build pass.
+    Pre-inject them here so the first build already has the symbols."""
+    if not os.path.isfile(NS_PATH):
+        log("!! %s missing" % NS_PATH)
+        sys.exit(1)
+    text = read(NS_PATH)
+    if "int path_umount(struct path *path, int flags)" in text:
+        log("namespace.c: path_umount already present")
+        return
+    idx = text.find(NS_ANCHOR)
+    if idx < 0:
+        log("!! namespace.c: anchor %r not found" % NS_ANCHOR)
+        sys.exit(1)
+    text = text[:idx] + NS_FUNCS.lstrip("\n") + "\n" + text[idx:]
+    write(NS_PATH, text)
+    log("namespace.c: injected can_umount + path_umount before %r" % NS_ANCHOR)
+
 def main():
     if not os.path.isdir("KernelSU"):
         log("!! KernelSU dir missing")
@@ -144,6 +199,7 @@ def main():
     fix_task_mmu_h()
     fix_readdir_h()
     fix_ksu_kconfig()
+    fix_namespace_c()
     log("all repairs done")
 
 
