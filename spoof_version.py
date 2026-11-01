@@ -1,23 +1,35 @@
 #!/usr/bin/env python3
 """Make the built kernel report the stock MIUI kernel identity.
 
-Replaces init/version.c's linux_banner with the exact string the stock
-MIUI 14 (V14.0.6.0.TGACNXM) kernel prints, so /proc/version and uname agree.
+Rewrites init/version.c so that every kernel-side version surface
+(/proc/version, uname(2) via init_uts_ns, /proc/sys/kernel/version,
+linux_banner) prints exactly what the stock MIUI 14 kernel prints.
 """
 import os
 import re
 import sys
 
-TEXT = (
-    "Linux version 4.19.157-perf-g9d90dd04aa7c "
+RELEASE = "4.19.157-perf-g9d90dd04aa7c"
+VERSION = "#1 SMP PREEMPT Mon Sep 4 10:51:57 UTC 2023"
+BANNER = (
+    "Linux version " + RELEASE + " "
     "(builder@pangu-build-component-vendor-144082-xmbbk-vqbzf-3sb9s) "
     "(clang version 10.0.7 for Android NDK, GNU ld (binutils-2.27-bd24d23f) 2.27.0.20170315) "
-    "#1 SMP PREEMPT Mon Sep 4 10:51:57 UTC 2023"
+    + VERSION
 )
-# C escape for the trailing newline: backslash + 'n' as literal source text.
-C_LITERAL = TEXT + chr(92) + "n"
+NL = chr(92) + "n"          # literal backslash + n for the C source
+BANNER_C = BANNER + NL
 
-REPL = 'const char linux_banner[] = "%s";\n' % C_LITERAL
+
+def cstr(s):
+    """Escape a plain string for use inside a C string literal."""
+    return s.replace(chr(92), chr(92) * 2).replace('"', chr(92) + '"')
+
+
+def sub_once(src, pattern, repl, label):
+    out, n = re.subn(pattern, lambda m: repl, src, flags=re.S)
+    print("    %-22s %s" % (label + ":", "ok" if n else "NOT FOUND"))
+    return out, n
 
 
 def main():
@@ -25,21 +37,47 @@ def main():
     if not os.path.exists(p):
         print("!! init/version.c missing")
         sys.exit(1)
-    if "\n" in C_LITERAL:
-        print("!! internal error: C literal contains a real newline")
-        sys.exit(1)
     s = open(p).read()
-    # NOTE: re.sub treats backslashes in the replacement as escapes, so use a
-    # callable to keep the C "\n" escape intact.
-    s2, n = re.subn(r"const char linux_banner\[\]\s*=.*?;\n", lambda m: REPL, s, flags=re.S)
-    if n == 0:
-        print("!! linux_banner definition not found")
+    total = 0
+
+    s, n = sub_once(
+        s,
+        r"const char linux_banner\[\]\s*=.*?;\n",
+        'const char linux_banner[] = "%s";\n' % BANNER_C,
+        "linux_banner",
+    )
+    total += n
+
+    s, n = sub_once(
+        s,
+        r"const char linux_proc_banner\[\]\s*=.*?;\n",
+        'const char linux_proc_banner[] = "%s";\n' % BANNER_C,
+        "linux_proc_banner",
+    )
+    total += n
+
+    s, n = sub_once(
+        s,
+        r"\.release\s*=\s*UTS_RELEASE,",
+        '.release\t= "%s",' % RELEASE,
+        "uts.release",
+    )
+    total += n
+
+    s, n = sub_once(
+        s,
+        r"\.version\s*=\s*UTS_VERSION,",
+        '.version\t= "%s",' % VERSION,
+        "uts.version",
+    )
+    total += n
+
+    if total < 4:
+        print("!! only %d/4 sites patched" % total)
         sys.exit(1)
-    open(p, "w").write(s2)
-    print("[fix] linux_banner replaced (%d site)" % n)
-    for line in open(p).read().splitlines():
-        if "linux_banner" in line:
-            print("    " + line[:200])
+
+    open(p, "w").write(s)
+    print("[fix] init/version.c rewritten (%d sites)" % total)
 
 
 if __name__ == "__main__":
