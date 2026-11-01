@@ -222,6 +222,104 @@ def fix_cred_h():
     write(path, text)
     log("cred.h: injected get_cred_rcu before %r" % anchor)
 
+SELINUX_SUSFS_BLOCK = r"""#ifdef CONFIG_KSU_SUSFS
+static inline void susfs_set_sid(const char *secctx_name, u32 *out_sid)
+{
+	int err;
+
+	if (!secctx_name || !out_sid) {
+		pr_err("secctx_name || out_sid is NULL\n");
+		return;
+	}
+
+	err = security_secctx_to_secid(secctx_name, strlen(secctx_name),
+					   out_sid);
+	if (err) {
+		pr_err("failed setting sid for '%s', err: %d\n", secctx_name, err);
+		return;
+	}
+	pr_info("sid '%u' is set for secctx_name '%s'\n", *out_sid, secctx_name);
+}
+
+bool susfs_is_sid_equal(void *sec, u32 sid2) {
+	struct task_security_struct *tsec = (struct task_security_struct *)sec;
+	if (!tsec) {
+		return false;
+	}
+	return tsec->sid == sid2;
+}
+
+u32 susfs_get_sid_from_name(const char *secctx_name)
+{
+	u32 out_sid = 0;
+	int err;
+
+	if (!secctx_name) {
+		pr_err("secctx_name is NULL\n");
+		return 0;
+	}
+	err = security_secctx_to_secid(secctx_name, strlen(secctx_name),
+					   &out_sid);
+	if (err) {
+		pr_err("failed getting sid from secctx_name: %s, err: %d\n", secctx_name, err);
+		return 0;
+	}
+	return out_sid;
+}
+
+u32 susfs_get_current_sid(void) {
+	return current_sid();
+}
+
+void susfs_set_zygote_sid(void)
+{
+	susfs_set_sid(KERNEL_ZYGOTE_DOMAIN, &susfs_zygote_sid);
+}
+
+bool susfs_is_current_zygote_domain(void) {
+	return unlikely(current_sid() == susfs_zygote_sid);
+}
+
+void susfs_set_ksu_sid(void)
+{
+	susfs_set_sid(KERNEL_SU_DOMAIN, &susfs_ksu_sid);
+}
+
+bool susfs_is_current_ksu_domain(void) {
+	return unlikely(current_sid() == susfs_ksu_sid);
+}
+
+void susfs_set_init_sid(void)
+{
+	susfs_set_sid(KERNEL_INIT_DOMAIN, &susfs_init_sid);
+}
+
+bool susfs_is_current_init_domain(void) {
+	return unlikely(current_sid() == susfs_init_sid);
+}
+#endif
+
+"""
+
+
+def fix_ksu_selinux_c():
+    p = "KernelSU/kernel/selinux/selinux.c"
+    if not os.path.exists(p):
+        log("!! %s missing" % p)
+        return
+    t = open(p).read()
+    if "susfs_is_current_ksu_domain" in t:
+        log("[ok] selinux.c already has susfs sid helpers")
+        return
+    anchor = "#define DEVPTS_DOMAIN"
+    if anchor in t:
+        t = t.replace(anchor, SELINUX_SUSFS_BLOCK + anchor, 1)
+        log("[fix] inserted susfs sid helpers before DEVPTS_DOMAIN")
+    else:
+        t = t + "\n" + SELINUX_SUSFS_BLOCK
+        log("[fix] appended susfs sid helpers to selinux.c")
+    open(p, "w").write(t)
+
 def main():
     if not os.path.isdir("KernelSU"):
         log("!! KernelSU dir missing")
@@ -235,6 +333,7 @@ def main():
     fix_task_mmu_h()
     fix_readdir_h()
     fix_ksu_kconfig()
+    fix_ksu_selinux_c()
     fix_namespace_c()
     log("all repairs done")
 
