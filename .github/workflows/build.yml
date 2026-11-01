@@ -19,6 +19,10 @@ on:
         description: "defconfig file name"
         default: "thyme_defconfig"
         required: false
+      with_susfs:
+        description: "apply SUSFS patches (false = KernelSU only, for A/B testing)"
+        default: "true"
+        required: false
 
 jobs:
   build:
@@ -78,6 +82,7 @@ jobs:
           echo 'source "drivers/kernelsu/Kconfig"' >> drivers/Kconfig
 
       - name: Clone SUSFS and apply patches
+        if: inputs.with_susfs == 'true'
         working-directory: ./kernel
         run: |
           git clone --depth=1 -b kernel-4.19 https://gitlab.com/simonpunk/susfs4ksu.git susfs_src
@@ -93,6 +98,7 @@ jobs:
           find . -name "*.rej" -not -path "./susfs_src/*" | tee rejects.txt || true
 
       - name: Repair rejects (msm-4.19 tree differences)
+        if: inputs.with_susfs == 'true'
         working-directory: ./kernel
         run: |
           cp ../fix_patches.py .
@@ -108,11 +114,14 @@ jobs:
         run: |
           cat >> arch/arm64/configs/${{ inputs.defconfig }} <<'EOF'
 
-          # --- KernelSU + SUSFS ---
+          # --- KernelSU (+ SUSFS) ---
           CONFIG_KSU=y
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
+          EOF
+          if [ "${{ inputs.with_susfs }}" = "true" ]; then
+          cat >> arch/arm64/configs/${{ inputs.defconfig }} <<'EOF'
           CONFIG_KSU_SUSFS=y
           CONFIG_KSU_SUSFS_SUS_PATH=y
           CONFIG_KSU_SUSFS_SUS_MOUNT=y
@@ -126,6 +135,7 @@ jobs:
           CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y
           CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
           EOF
+          fi
           tail -20 arch/arm64/configs/${{ inputs.defconfig }}
 
       - name: Shim python2 for mkdtboimg
@@ -166,7 +176,7 @@ jobs:
       - name: Upload Image
         uses: actions/upload-artifact@v4
         with:
-          name: Image-thyme-susfs
+          name: Image-thyme-${{ inputs.with_susfs == 'true' && 'susfs' || 'ksuonly' }}
           path: kernel/out/arch/arm64/boot/Image
           if-no-files-found: error
           retention-days: 14
