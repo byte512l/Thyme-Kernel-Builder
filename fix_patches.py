@@ -191,10 +191,46 @@ def fix_namespace_c():
     write(NS_PATH, text)
     log("namespace.c: injected can_umount + path_umount before %r" % NS_ANCHOR)
 
+def fix_cred_h():
+    """4.19 has no get_cred_rcu(); KernelSU/SUSFS call it. Inject the 5.4 backport."""
+    path = "include/linux/cred.h"
+    if not os.path.isfile(path):
+        log("!! %s missing" % path)
+        sys.exit(1)
+    text = read(path)
+    if "get_cred_rcu" in text:
+        log("cred.h: get_cred_rcu already present")
+        return
+    anchor = "static inline void put_cred"
+    idx = text.find(anchor)
+    if idx < 0:
+        log("!! cred.h: anchor %r not found" % anchor)
+        sys.exit(1)
+    fn = (
+        "static inline const struct cred *get_cred_rcu(const struct cred *cred)\n"
+        "{\n"
+        "\tstruct cred *nonconst_cred = (struct cred *) cred;\n"
+        "\tif (!cred)\n"
+        "\t\treturn NULL;\n"
+        "\tif (!atomic_inc_not_zero(&nonconst_cred->usage))\n"
+        "\t\treturn NULL;\n"
+        "\tvalidate_creds(cred);\n"
+        "\treturn cred;\n"
+        "}\n\n"
+    )
+    text = text[:idx] + fn + text[idx:]
+    write(path, text)
+    log("cred.h: injected get_cred_rcu before %r" % anchor)
+
 def main():
     if not os.path.isdir("KernelSU"):
         log("!! KernelSU dir missing")
         sys.exit(1)
+    fix_cred_h()
+    if "--no-susfs" in sys.argv:
+        log("ksu-only mode: skipped SUSFS repairs")
+        log("all repairs done")
+        return
     fix_sched_h()
     fix_task_mmu_h()
     fix_readdir_h()

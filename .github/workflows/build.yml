@@ -98,16 +98,22 @@ jobs:
           find . -name "*.rej" -not -path "./susfs_src/*" | tee rejects.txt || true
 
       - name: Repair rejects (msm-4.19 tree differences)
-        if: inputs.with_susfs == 'true'
         working-directory: ./kernel
         run: |
           cp ../fix_patches.py .
-          python3 fix_patches.py
+          if [ "${{ inputs.with_susfs }}" = "true" ]; then
+            python3 fix_patches.py
+          else
+            python3 fix_patches.py --no-susfs
+          fi
           echo "=== verify markers ==="
-          grep -c susfs fs/Makefile
-          grep -n "susfs_task_state" include/linux/sched.h | head -3
-          grep -n "susfs_def.h" fs/proc/task_mmu.c fs/readdir.c fs/notify/fdinfo.c | head -5
-          grep -n "KSU_SUSFS" KernelSU/kernel/Kconfig | head -5
+          grep -n "get_cred_rcu" include/linux/cred.h | head -2
+          if [ "${{ inputs.with_susfs }}" = "true" ]; then
+            grep -c susfs fs/Makefile
+            grep -n "susfs_task_state" include/linux/sched.h | head -3
+            grep -n "susfs_def.h" fs/proc/task_mmu.c fs/readdir.c fs/notify/fdinfo.c | head -5
+            grep -n "KSU_SUSFS" KernelSU/kernel/Kconfig | head -5
+          fi
 
       - name: Append kernel config
         working-directory: ./kernel
