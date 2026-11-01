@@ -115,6 +115,14 @@ jobs:
             grep -n "KSU_SUSFS" KernelSU/kernel/Kconfig | head -5
           fi
 
+      - name: Spoof kernel banner (match stock MIUI kernel)
+        working-directory: ./kernel
+        run: |
+          cp ../spoof_version.py .
+          python3 spoof_version.py
+          echo "=== verify banner ==="
+          grep -n "Linux version 4.19.157-perf-g9d90dd04aa7c" init/version.c | head -2
+
       - name: Append kernel config
         working-directory: ./kernel
         run: |
@@ -125,6 +133,10 @@ jobs:
           CONFIG_KPROBES=y
           CONFIG_HAVE_KPROBES=y
           CONFIG_KPROBE_EVENTS=y
+
+          # --- report stock MIUI kernel release string ---
+          CONFIG_LOCALVERSION="-perf-g9d90dd04aa7c"
+          # CONFIG_LOCALVERSION_AUTO is not set
           EOF
           if [ "${{ inputs.with_susfs }}" = "true" ]; then
           cat >> arch/arm64/configs/${{ inputs.defconfig }} <<'EOF'
@@ -157,6 +169,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCC=gcc HOSTLD=ld HOSTAR=ar \
+            LOCALVERSION= \
             ${{ inputs.defconfig }}
           grep -E "CONFIG_(KSU|KPROBES)" out/.config | head -25
 
@@ -169,6 +182,7 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             HOSTCC=gcc HOSTLD=ld HOSTAR=ar \
+            LOCALVERSION= \
             Image
 
       - name: Verify Image
